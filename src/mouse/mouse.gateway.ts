@@ -7,37 +7,72 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { MouseService } from './mouse.service';
-
+import type { Operation } from './mouse.service';
 @WebSocketGateway({
-  cors: {
-    origin: '*',
-  },
+  cors: { origin: '*' },
 })
-export class MouseGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class MouseGateway
+  implements
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  OnModuleInit,
+  OnModuleDestroy {
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly mouseService: MouseService) {}
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+  CANVAS_SEED = 0x8f3a_2b1c;
+
+  constructor(private readonly mouseService: MouseService) { }
+
+  onModuleInit() {
+    const intervalMs = this.mouseService.getCleanupIntervalMs();
+    this.cleanupTimer = setInterval(() => {
+      const { removedUserIds, canvasState } =
+        this.mouseService.cleanupTimeoutUsers();
+      for (const userId of removedUserIds) {
+        this.server.emit('user_ops_removed', {
+          userId,
+          canvas_state: canvasState,
+        });
+      }
+    }, intervalMs);
+  }
+
+  onModuleDestroy() {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+  }
 
   handleConnection(client: Socket) {
-    console.log(`Client connected: ${client.id}`);
     const user = this.mouseService.createUser(client.id, '/');
-
-    client.emit('init', user);
+    const initPayload = {
+      ...user,
+      seed: this.CANVAS_SEED,
+      canvasSeed: this.CANVAS_SEED,
+    };
+    client.emit('init', initPayload);
     client.emit('current_users', this.mouseService.getAllUsers());
+    client.emit('canvas_state', {
+      operations: this.mouseService.getCanvasState(),
+    });
     client.broadcast.emit('new_user_joined', user);
   }
 
   handleDisconnect(client: Socket) {
-    console.log(`Client disconnected: ${client.id}`);
+    this.mouseService.markUserDisconnected(client.id);
     this.mouseService.removeUser(client.id);
-    client.broadcast.emit('user_left', client.id);
+    this.server.emit('user_left', client.id);
   }
 
   @SubscribeMessage('move_pointer')
-  handelPointerMove(
+  handlePointerMove(
     @ConnectedSocket() client: Socket,
     @MessageBody()
     data: {
@@ -50,7 +85,7 @@ export class MouseGateway implements OnGatewayConnection, OnGatewayDisconnect {
       current_page: string;
     },
   ) {
-    const updatedUser = this.mouseService.updateUserPosition(
+    const updated = this.mouseService.updateUserPosition(
       client.id,
       data.x,
       data.y,
@@ -60,8 +95,8 @@ export class MouseGateway implements OnGatewayConnection, OnGatewayDisconnect {
       data.pageY,
       data.current_page,
     );
-    if (updatedUser) {
-      client.broadcast.emit('pointer_moved', updatedUser);
+    if (updated) {
+      client.broadcast.emit('pointer_moved', updated);
     }
   }
 
@@ -70,147 +105,72 @@ export class MouseGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { scrollX: number; scrollY: number },
   ) {
-    const updatedUser = this.mouseService.updateUserScroll(
+    const updated = this.mouseService.updateUserScroll(
       client.id,
       data.scrollX,
       data.scrollY,
     );
-    if (updatedUser) {
-      client.broadcast.emit('pointer_moved', updatedUser);
+    if (updated) {
+      client.broadcast.emit('pointer_moved', updated);
     }
   }
 
-  // --- Puzzle State Management ---
+  @SubscribeMessage('draw_op')
+  handleDrawOp(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() op: Operation,
+  ) {
+    console.log('Received draw_op:', {
+      id: op?.id,
+      type: op?.type,
+      playerId: op?.playerId,
+      hasFillResult: !!(op?.data as any)?.fillResult,
+      dataKeys: op?.data ? Object.keys(op.data) : []
+    });
 
-  @SubscribeMessage('puzzle_request_state')
-  handlePuzzleRequestState(@ConnectedSocket() client: Socket) {
-    const puzzleState = this.mouseService.getPuzzleState();
-    if (puzzleState) {
-      client.emit('puzzle_state_sync', puzzleState);
-    } else {
-      client.emit('puzzle_no_state');
+    const { id, playerId, type, timestamp, data } = op;
+    if (!id || !playerId || !type || typeof timestamp !== 'number' || !data) {
+      console.warn('Invalid operation received:', op);
+      return;
     }
-  }
-
-  @SubscribeMessage('puzzle_init_request')
-  handlePuzzleInitRequest(
-    @MessageBody()
-    data: {
-      width: number;
-      height: number;
-      imageWidth: number;
-      imageHeight: number;
-      imageX: number;
-      imageY: number;
-      rows: number;
-      cols: number;
-      rotationRange?: number;
-    },
-    @ConnectedSocket() client: Socket,
-  ) {
-    // Only initialize if no state exists
-    if (!this.mouseService.getPuzzleState()) {
-      console.log('Initializing puzzle state from client request', client.id);
-      const puzzleState = this.mouseService.generatePuzzleState(
-        data.width,
-        data.height,
-        data.imageWidth,
-        data.imageHeight,
-        data.imageX,
-        data.imageY,
-        data.rows,
-        data.cols,
-        data.rotationRange || 45,
-      );
-      // Broadcast to all clients including the one that requested
-      this.server.emit('puzzle_state_sync', puzzleState);
-    }
-  }
-
-  @SubscribeMessage('puzzle_piece_drag_start')
-  handlePuzzleDragStart(
-    @MessageBody()
-    data: { pieceId: string; x: number; y: number; rotation?: number },
-    @ConnectedSocket() client: Socket,
-  ) {
-    // Just broadcast, state update happens on drag end
-    client.broadcast.emit('puzzle_piece_drag_start', {
-      userId: client.id,
-      pieceId: data.pieceId,
-      x: data.x,
-      y: data.y,
-      rotation: data.rotation,
-    });
-  }
-
-  @SubscribeMessage('puzzle_piece_drag_move')
-  handlePuzzleDragMove(
-    @MessageBody()
-    data: { pieceId: string; x: number; y: number; rotation?: number },
-    @ConnectedSocket() client: Socket,
-  ) {
-    // Throttled updates - just broadcast
-    client.broadcast.emit('puzzle_piece_drag_move', {
-      userId: client.id,
-      pieceId: data.pieceId,
-      x: data.x,
-      y: data.y,
-      rotation: data.rotation,
-    });
-  }
-
-  @SubscribeMessage('puzzle_piece_drag_end')
-  handlePuzzleDragEnd(
-    @MessageBody()
-    data: { pieceId: string; x: number; y: number; rotation?: number },
-    @ConnectedSocket() client: Socket,
-  ) {
-    // Update state in service
-    this.mouseService.updatePiecePosition(
-      data.pieceId,
-      data.x,
-      data.y,
-      'board',
-      data.rotation,
-    );
-
-    client.broadcast.emit('puzzle_piece_drag_end', {
-      userId: client.id,
-      pieceId: data.pieceId,
-      x: data.x,
-      y: data.y,
-      rotation: data.rotation,
-    });
-  }
-
-  @SubscribeMessage('puzzle_piece_snap')
-  handlePuzzlePieceSnap(
-    @MessageBody() data: { pieceId: string },
-    @ConnectedSocket() client: Socket,
-  ) {
-    const snapped = this.mouseService.snapPiece(data.pieceId);
-
-    if (snapped) {
-      const puzzleState = this.mouseService.getPuzzleState();
-      if (puzzleState?.isCompleted) {
-        this.server.emit('puzzle_completed');
+    
+    // CRITICAL: Preserve ALL data fields including fillResult
+    const safeOp: Operation = { 
+      id, 
+      playerId, 
+      type, 
+      timestamp, 
+      data: {
+        ...data, // This MUST preserve fillResult, fillPoint, targetColor, fillColor, etc.
       }
-    }
-
-    client.broadcast.emit('puzzle_piece_snap', {
-      userId: client.id,
-      pieceId: data.pieceId,
+    };
+    
+    console.log('Broadcasting operation:', {
+      id: safeOp.id,
+      type: safeOp.type,
+      hasFillResult: !!(safeOp.data as any)?.fillResult
     });
+    
+    this.mouseService.addOperation(safeOp);
+    this.server.emit('draw_op', safeOp); // Broadcast to ALL clients
   }
 
-  @SubscribeMessage('puzzle_reset_request')
-  handlePuzzleResetRequest(@ConnectedSocket() client: Socket) {
-    const puzzleState = this.mouseService.getPuzzleState();
-    // Only allow reset if game is completed
-    if (puzzleState?.isCompleted) {
-      console.log('Resetting puzzle state requested by', client.id);
-      this.mouseService.resetPuzzleState();
-      this.server.emit('puzzle_reset');
-    }
+  @SubscribeMessage('reset_my_ops')
+  handleResetMyOps(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { userId?: string },
+  ) {
+    // Use the userId from the payload, or fallback to client.id
+    const userId = data?.userId || client.id;
+
+    // Remove this user's operations from the canvas state
+    // You'll need to add this method to MouseService if it doesn't exist
+    const canvasState = this.mouseService.removeUserOperations(userId);
+
+    // Broadcast to all clients (including the one who reset)
+    this.server.emit('user_ops_removed', {
+      userId,
+      canvas_state: canvasState,
+    });
   }
 }
