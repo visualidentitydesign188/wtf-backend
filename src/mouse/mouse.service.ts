@@ -21,6 +21,7 @@ export interface Operation {
   playerId: string;
   type: OperationType;
   timestamp: number;
+  sequence?: number;
   data: {
     path?: Array<{ x: number; y: number }>;
     sprayPoints?: Array<{ x: number; y: number }>;
@@ -30,11 +31,12 @@ export interface Operation {
     color?: string;
     backgroundColor?: string;
     size?: number;
+    fillResult?: any; // Compressed fill result - CRITICAL for sync
   };
 }
 
-const INACTIVITY_MS = 10 * 60 * 1000;   // 10 minutes
-const CLEANUP_INTERVAL_MS = 60 * 1000;  // 1 minute
+const INACTIVITY_MS = 10 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 60 * 1000;
 
 @Injectable()
 export class MouseService {
@@ -60,8 +62,7 @@ export class MouseService {
   }
 
   updateUserPosition(
-    id: string,
-    x: number, y: number,
+    id: string, x: number, y: number,
     scrollX: number, scrollY: number,
     pageX: number, pageY: number,
     current_page: string,
@@ -95,7 +96,6 @@ export class MouseService {
     return Array.from(this.users.values());
   }
 
-  /** Call before removeUser on disconnect. Tracks users who drew for 10‑min timeout. */
   markUserDisconnected(id: string): void {
     const user = this.users.get(id);
     if (user?.lastDrawAt != null) {
@@ -103,32 +103,48 @@ export class MouseService {
     }
   }
 
+  // Get operations sorted by TIMESTAMP (global order)
+  getCanvasState(): Operation[] {
+    return [...this.canvasOperations].sort((a, b) => {
+      if (a.timestamp !== b.timestamp) {
+        return a.timestamp - b.timestamp;
+      }
+      return a.id.localeCompare(b.id);
+    });
+  }
 
- getCanvasState(): Operation[] {
-  // Return complete operations with all fields
-  return this.canvasOperations.map(op => ({
-    id: op.id,
-    playerId: op.playerId,
-    type: op.type,
-    timestamp: op.timestamp,
-    data: {
-      ...op.data, // Preserve all fields including fillResult
-    }
-  }));
-}
-
+  // Add operation in timestamp order
   addOperation(op: Operation): void {
-  // Don't filter or transform - store exactly as received
-  this.canvasOperations.push({
-    id: op.id,
-    playerId: op.playerId,
-    type: op.type,
-    timestamp: op.timestamp,
-    data: {
-      ...op.data, // Preserve EVERYTHING including fillResult
+    if (typeof op.timestamp !== 'number') {
+      op.timestamp = Date.now();
     }
-  });
-}
+
+    // Check for duplicate
+    const existingIndex = this.canvasOperations.findIndex(o => o.id === op.id);
+    if (existingIndex >= 0) {
+      // Update but preserve fillResult if new one doesn't have it
+      const existing = this.canvasOperations[existingIndex];
+      if (existing.type === 'fillColor' && existing.data?.fillResult && !op.data?.fillResult) {
+        op.data.fillResult = existing.data.fillResult;
+      }
+      this.canvasOperations[existingIndex] = op;
+      return;
+    }
+
+    // Insert in timestamp order
+    let insertIndex = this.canvasOperations.length;
+    for (let i = this.canvasOperations.length - 1; i >= 0; i--) {
+      const existing = this.canvasOperations[i];
+      if (existing.timestamp <= op.timestamp) {
+        if (existing.timestamp === op.timestamp && existing.id > op.id) {
+          continue;
+        }
+        insertIndex = i + 1;
+        break;
+      }
+    }
+    this.canvasOperations.splice(insertIndex, 0, op);
+  }
 
   removeOperationsByPlayerId(playerId: string): Operation[] {
     this.canvasOperations = this.canvasOperations.filter((o) => o.playerId !== playerId);
@@ -137,19 +153,9 @@ export class MouseService {
     return this.getCanvasState();
   }
 
-
   removeUserOperations(userId: string): Operation[] {
-    // Filter out operations, but preserve all fields of remaining operations
-    this.canvasOperations = this.canvasOperations.filter(
-      (op) => op.playerId !== userId
-    );
-    // Return complete operations with all fields
-    return this.canvasOperations.map(op => ({
-      ...op,
-      data: {
-        ...op.data, // Preserve all data fields including fillResult
-      }
-    }));
+    this.canvasOperations = this.canvasOperations.filter((op) => op.playerId !== userId);
+    return this.getCanvasState();
   }
 
   cleanupTimeoutUsers(): { removedUserIds: string[]; canvasState: Operation[] } {
