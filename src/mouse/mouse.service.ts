@@ -5,6 +5,7 @@ export interface UserPointer {
   name: string;
   color: string;
   current_page: string;
+  roomId: string;
   x: number;
   y: number;
   scrollX?: number;
@@ -41,48 +42,76 @@ const CLEANUP_INTERVAL_MS = 60 * 1000;
 @Injectable()
 export class MouseService {
   private users: Map<string, UserPointer> = new Map();
-  private canvasOperations: Operation[] = [];
-  private disconnectedDrawingUsers: Map<string, { disconnectedAt: number }> = new Map();
+  /** Canvas state per room (roomId -> operations) */
+  private canvasOperationsByRoom = new Map<string, Operation[]>();
+  private disconnectedDrawingUsers: Map<string, { disconnectedAt: number }> =
+    new Map();
 
   private getRandomColor(): string {
-    const colors = ['#F87171', '#60A5FA', '#34D399', '#FB923C', '#A78BFA', '#F472B6'];
+    const colors = [
+      '#F87171',
+      '#60A5FA',
+      '#34D399',
+      '#FB923C',
+      '#A78BFA',
+      '#F472B6',
+    ];
     return colors[Math.floor(Math.random() * colors.length)];
   }
 
-  createUser(id: string, current_page: string): UserPointer {
+  createUser(id: string, current_page: string, roomId: string): UserPointer {
     const user: UserPointer = {
       id,
       name: `User_${id.substring(0, 5)}`,
       color: this.getRandomColor(),
       current_page,
-      x: 0, y: 0, scrollX: 0, scrollY: 0, pageX: 0, pageY: 0,
+      roomId,
+      x: 0,
+      y: 0,
+      scrollX: 0,
+      scrollY: 0,
+      pageX: 0,
+      pageY: 0,
     };
     this.users.set(id, user);
     return user;
   }
 
   updateUserPosition(
-    id: string, x: number, y: number,
-    scrollX: number, scrollY: number,
-    pageX: number, pageY: number,
+    id: string,
+    x: number,
+    y: number,
+    scrollX: number,
+    scrollY: number,
+    pageX: number,
+    pageY: number,
     current_page: string,
   ): UserPointer | null {
     const user = this.users.get(id);
     if (user) {
-      user.x = x; user.y = y;
-      user.scrollX = scrollX; user.scrollY = scrollY;
-      user.pageX = pageX; user.pageY = pageY;
+      user.x = x;
+      user.y = y;
+      user.scrollX = scrollX;
+      user.scrollY = scrollY;
+      user.pageX = pageX;
+      user.pageY = pageY;
       user.current_page = current_page;
       return user;
     }
     return null;
   }
 
-  updateUserScroll(id: string, scrollX: number, scrollY: number): UserPointer | null {
+  updateUserScroll(
+    id: string,
+    scrollX: number,
+    scrollY: number,
+  ): UserPointer | null {
     const user = this.users.get(id);
     if (user) {
-      user.scrollX = scrollX; user.scrollY = scrollY;
-      user.pageX = scrollX + user.x; user.pageY = scrollY + user.y;
+      user.scrollX = scrollX;
+      user.scrollY = scrollY;
+      user.pageX = scrollX + user.x;
+      user.pageY = scrollY + user.y;
       return user;
     }
     return null;
@@ -96,6 +125,10 @@ export class MouseService {
     return Array.from(this.users.values());
   }
 
+  getUsersInRoom(roomId: string): UserPointer[] {
+    return Array.from(this.users.values()).filter((u) => u.roomId === roomId);
+  }
+
   markUserDisconnected(id: string): void {
     const user = this.users.get(id);
     if (user?.lastDrawAt != null) {
@@ -103,9 +136,19 @@ export class MouseService {
     }
   }
 
-  // Get operations sorted by TIMESTAMP (global order)
-  getCanvasState(): Operation[] {
-    return [...this.canvasOperations].sort((a, b) => {
+  private getOrCreateRoomOps(roomId: string): Operation[] {
+    let ops = this.canvasOperationsByRoom.get(roomId);
+    if (!ops) {
+      ops = [];
+      this.canvasOperationsByRoom.set(roomId, ops);
+    }
+    return ops;
+  }
+
+  /** Get operations for a room sorted by TIMESTAMP */
+  getCanvasState(roomId: string): Operation[] {
+    const ops = this.canvasOperationsByRoom.get(roomId) ?? [];
+    return [...ops].sort((a, b) => {
       if (a.timestamp !== b.timestamp) {
         return a.timestamp - b.timestamp;
       }
@@ -113,28 +156,30 @@ export class MouseService {
     });
   }
 
-  // Add operation in timestamp order
-  addOperation(op: Operation): void {
+  /** Add operation to a room in timestamp order */
+  addOperation(roomId: string, op: Operation): void {
     if (typeof op.timestamp !== 'number') {
       op.timestamp = Date.now();
     }
+    const canvasOperations = this.getOrCreateRoomOps(roomId);
 
-    // Check for duplicate
-    const existingIndex = this.canvasOperations.findIndex(o => o.id === op.id);
+    const existingIndex = canvasOperations.findIndex((o) => o.id === op.id);
     if (existingIndex >= 0) {
-      // Update but preserve fillResult if new one doesn't have it
-      const existing = this.canvasOperations[existingIndex];
-      if (existing.type === 'fillColor' && existing.data?.fillResult && !op.data?.fillResult) {
+      const existing = canvasOperations[existingIndex];
+      if (
+        existing.type === 'fillColor' &&
+        existing.data?.fillResult &&
+        !op.data?.fillResult
+      ) {
         op.data.fillResult = existing.data.fillResult;
       }
-      this.canvasOperations[existingIndex] = op;
+      canvasOperations[existingIndex] = op;
       return;
     }
 
-    // Insert in timestamp order
-    let insertIndex = this.canvasOperations.length;
-    for (let i = this.canvasOperations.length - 1; i >= 0; i--) {
-      const existing = this.canvasOperations[i];
+    let insertIndex = canvasOperations.length;
+    for (let i = canvasOperations.length - 1; i >= 0; i--) {
+      const existing = canvasOperations[i];
       if (existing.timestamp <= op.timestamp) {
         if (existing.timestamp === op.timestamp && existing.id > op.id) {
           continue;
@@ -143,24 +188,38 @@ export class MouseService {
         break;
       }
     }
-    this.canvasOperations.splice(insertIndex, 0, op);
+    canvasOperations.splice(insertIndex, 0, op);
   }
 
-  removeOperationsByPlayerId(playerId: string): Operation[] {
-    this.canvasOperations = this.canvasOperations.filter((o) => o.playerId !== playerId);
+  removeOperationsByPlayerId(roomId: string, playerId: string): Operation[] {
+    const ops = this.canvasOperationsByRoom.get(roomId);
+    if (ops) {
+      const next = ops.filter((o) => o.playerId !== playerId);
+      this.canvasOperationsByRoom.set(roomId, next);
+    }
     const user = this.users.get(playerId);
     if (user) user.lastDrawAt = undefined;
-    return this.getCanvasState();
+    return this.getCanvasState(roomId);
   }
 
   removeUserOperations(userId: string): Operation[] {
-    this.canvasOperations = this.canvasOperations.filter((op) => op.playerId !== userId);
-    return this.getCanvasState();
+    const user = this.users.get(userId);
+    if (!user) return [];
+    const roomId = user.roomId;
+    const ops = this.canvasOperationsByRoom.get(roomId);
+    if (!ops) return this.getCanvasState(roomId);
+    const next = ops.filter((op) => op.playerId !== userId);
+    this.canvasOperationsByRoom.set(roomId, next);
+    return this.getCanvasState(roomId);
   }
 
-  cleanupTimeoutUsers(): { removedUserIds: string[]; canvasState: Operation[] } {
+  cleanupTimeoutUsers(): {
+    removedUserIds: string[];
+    canvasStateByRoom: Map<string, Operation[]>;
+  } {
     const now = Date.now();
     const removedUserIds: string[] = [];
+    const canvasStateByRoom = new Map<string, Operation[]>();
 
     for (const [id, { disconnectedAt }] of this.disconnectedDrawingUsers) {
       if (now - disconnectedAt >= INACTIVITY_MS) {
@@ -176,10 +235,17 @@ export class MouseService {
     }
 
     for (const id of removedUserIds) {
-      this.removeOperationsByPlayerId(id);
+      const user = this.users.get(id);
+      if (user) {
+        this.removeOperationsByPlayerId(user.roomId, id);
+        this.users.delete(id);
+      }
     }
 
-    return { removedUserIds, canvasState: this.getCanvasState() };
+    for (const [roomId] of this.canvasOperationsByRoom) {
+      canvasStateByRoom.set(roomId, this.getCanvasState(roomId));
+    }
+    return { removedUserIds, canvasStateByRoom };
   }
 
   getCleanupIntervalMs(): number {
