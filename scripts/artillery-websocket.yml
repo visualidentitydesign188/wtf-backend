@@ -1,0 +1,65 @@
+# Artillery WebSocket load test config
+# Install: npm install -g artillery
+# Run:     artillery run scripts/artillery-websocket.yml
+#
+# Override with env:
+#   artillery run -e staging scripts/artillery-websocket.yml
+# Or: WS_URL=http://localhost:3000 artillery run scripts/artillery-websocket.yml
+
+config:
+  target: "{{ $environment.WS_URL || 'http://localhost:3000' }}"
+  phases:
+    - duration: 60
+      arrivalRate: 10
+      name: 'Ramp up'
+    - duration: 120
+      arrivalRate: 20
+      name: 'Sustained load'
+    - duration: 30
+      arrivalRate: 5
+      name: 'Ramp down'
+  ws:
+    # Socket.IO engine
+    engine: 'socket.io'
+    # Optional: subprotocol
+    # subprotocols: ["socket.io"]
+
+scenarios:
+  - name: 'Connect and send draw ops'
+    engine: socketio
+    flow:
+      - connect:
+          url: "{{ $environment.WS_URL || 'http://localhost:3000' }}"
+          query:
+            current_page: 'load-test'
+      - think: 1
+      - emit:
+          channel: 'draw_op'
+          data:
+            id: 'op-{{ $randomString() }}-{{ $timestamp }}'
+            playerId: '{{ $socketId }}'
+            type: 'pencil'
+            timestamp: '{{ $timestamp }}'
+            data:
+              path:
+                - x: '{{ $randomInt(0, 800) }}'
+                  y: '{{ $randomInt(0, 600) }}'
+                - x: '{{ $randomInt(0, 800) }}'
+                  y: '{{ $randomInt(0, 600) }}'
+              color: '#000000'
+              size: 2
+      - think: 0.5
+      - emit:
+          channel: 'draw_op'
+          data:
+            id: 'op-{{ $randomString() }}-{{ $timestamp }}'
+            playerId: '{{ $socketId }}'
+            type: 'pencil'
+            timestamp: '{{ $timestamp }}'
+            data:
+              path:
+                - x: '{{ $randomInt(0, 800) }}'
+                  y: '{{ $randomInt(0, 600) }}'
+              color: '#000000'
+              size: 2
+      - think: 2
