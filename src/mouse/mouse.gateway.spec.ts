@@ -28,7 +28,7 @@ describe('MouseGateway', () => {
       join: jest.fn(),
       emit: jest.fn(),
       disconnect: jest.fn(),
-      handshake: { query: { current_page: 'page1' } } as Socket['handshake'],
+      handshake: { query: { current_page: 'page1' } } as unknown as Socket['handshake'],
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -68,7 +68,7 @@ describe('MouseGateway', () => {
     messageThrottleService = module.get<MessageThrottleService>(MessageThrottleService);
     redisService = module.get<RedisService>(RedisService);
 
-    (gateway as { server: typeof mockServer }).server = mockServer;
+    (gateway as unknown as { server: typeof mockServer }).server = mockServer;
   });
 
   it('should be defined', () => {
