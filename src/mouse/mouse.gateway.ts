@@ -1,3 +1,4 @@
+import { OnApplicationBootstrap } from '@nestjs/common';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -37,7 +38,11 @@ import { MessageThrottleService } from './message-throttle.service';
   },
 })
 export class MouseGateway
-  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
+  implements
+    OnGatewayInit,
+    OnGatewayConnection,
+    OnGatewayDisconnect,
+    OnApplicationBootstrap
 {
   @WebSocketServer()
   server: Server;
@@ -50,12 +55,20 @@ export class MouseGateway
     private readonly messageThrottleService: MessageThrottleService,
   ) {}
 
-  afterInit(server: Server) {
-    // Configure Redis adapter for horizontal scaling
+  afterInit(_server: Server) {
+    // Adapter is set in onApplicationBootstrap so Redis is ready (after all onModuleInit).
+  }
+
+  onApplicationBootstrap() {
     const pubClient = this.redisService.getPubClient();
     const subClient = this.redisService.getSubClient();
-
-    server.adapter(createAdapter(pubClient, subClient));
+    if (!pubClient || !subClient) {
+      console.warn(
+        'Socket.IO Redis adapter skipped: Redis clients not available',
+      );
+      return;
+    }
+    this.server.adapter(createAdapter(pubClient, subClient));
     console.log('Socket.IO Redis adapter initialized for horizontal scaling');
   }
 

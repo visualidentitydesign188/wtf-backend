@@ -17,4 +17,12 @@ describe('MouseController', () => {
   it('should be defined', () => {
     expect(controller).toBeDefined();
   });
+
+  it('getStatus should return Mouse is active', () => {
+    expect(controller.getStatus()).toBe('Mouse is active');
+  });
+
+  it('getUsers should return user list', () => {
+    expect(controller.getUsers()).toEqual(['user1', 'user2', 'user3']);
+  });
 });

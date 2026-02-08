@@ -31,14 +31,16 @@
 $ pnpm install
 ```
 
+For **local testing** (env, Redis, and test commands), see [LOCAL_TESTING.md](./LOCAL_TESTING.md).
+
 ## Compile and run the project
 
 ```bash
-# development
+# development (single run)
 $ pnpm run start
 
-# watch mode
-$ pnpm run start:dev
+# watch mode (recommended for local dev)
+$ pnpm run dev
 
 # production mode
 $ pnpm run start:prod

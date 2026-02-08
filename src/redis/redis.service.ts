@@ -13,27 +13,18 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     const redisUrl =
       this.configService.get<string>('REDIS_URL') || 'redis://localhost:6379';
 
-    const redisOptions = redisUrl.startsWith('redis://')
-      ? { host: 'localhost', port: 6379 }
-      : { url: redisUrl };
-
-    this.pubClient = new Redis(redisUrl, {
-      retryStrategy: (times) => {
+    const redisOptions = {
+      retryStrategy: (times: number) => {
         const delay = Math.min(times * 50, 2000);
         return delay;
       },
       maxRetriesPerRequest: 3,
-    });
+    };
 
-    this.subClient = new Redis(redisUrl, {
-      retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      },
-      maxRetriesPerRequest: 3,
-    });
+    this.pubClient = new Redis(redisUrl, redisOptions);
+    // Sub client must be a duplicate of pub for @socket.io/redis-adapter (ioredis)
+    this.subClient = this.pubClient.duplicate();
 
-    // Error handling
     this.pubClient.on('error', (err) => {
       console.error('Redis Pub Client Error:', err);
     });
@@ -48,7 +39,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       console.log('Redis Sub Client connected');
     });
 
-    // Wait for ready
     await Promise.all([
       new Promise((resolve) => this.pubClient.once('ready', resolve)),
       new Promise((resolve) => this.subClient.once('ready', resolve)),
