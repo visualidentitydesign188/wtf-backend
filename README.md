@@ -31,7 +31,8 @@
 $ pnpm install
 ```
 
-For **local testing** (env, Redis, and test commands), see [docs/LOCAL_TESTING.md](./docs/LOCAL_TESTING.md).
+- **Local testing** (env, Redis, tests): [docs/LOCAL_TESTING.md](./docs/LOCAL_TESTING.md)
+- **Frontend integration** (HTTP + WebSocket API, types, examples): [docs/FRONTEND_INTEGRATION.md](./docs/FRONTEND_INTEGRATION.md)
 
 ## Compile and run the project
 
