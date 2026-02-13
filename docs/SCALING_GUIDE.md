@@ -86,18 +86,18 @@ npm run start:prod
 
 1. **Start multiple instances** on different ports:
    ```bash
-   PORT=3000 npm run start:prod &
    PORT=3001 npm run start:prod &
    PORT=3002 npm run start:prod &
+   PORT=3003 npm run start:prod &
    ```
 
 2. **Configure Load Balancer** (nginx example):
    ```nginx
    upstream websocket_backend {
        ip_hash; # Sticky sessions
-       server localhost:3000;
        server localhost:3001;
        server localhost:3002;
+       server localhost:3003;
    }
 
    server {
@@ -128,7 +128,7 @@ services:
     build: .
     environment:
       - REDIS_URL=redis://redis:6379
-      - PORT=3000
+      - PORT=3001
     depends_on:
       - redis
   
@@ -136,7 +136,7 @@ services:
     build: .
     environment:
       - REDIS_URL=redis://redis:6379
-      - PORT=3001
+      - PORT=3002
     depends_on:
       - redis
   
