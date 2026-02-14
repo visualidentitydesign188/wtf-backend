@@ -193,4 +193,25 @@ export class MouseGateway
       client.emit('error', { message: 'Failed to reset operations' });
     }
   }
+  @SubscribeMessage('move_pointer')
+  handleMovePointer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      x: number;
+      y: number;
+      scrollX?: number;
+      scrollY?: number;
+      pageX?: number;
+      pageY?: number;
+      current_page: string;
+    },
+  ) {
+    const payload = {
+      id: client.id,
+      ...data,
+    };
+    // Broadcast to everyone except the sender (so others see this cursor)
+    client.broadcast.emit('pointer_moved', payload);
+  }
 }
