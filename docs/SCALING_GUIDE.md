@@ -116,40 +116,17 @@ npm run start:prod
 
 ### Docker Compose (Recommended)
 
-```yaml
-version: '3.8'
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-  
-  app1:
-    build: .
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - PORT=3001
-    depends_on:
-      - redis
-  
-  app2:
-    build: .
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - PORT=3002
-    depends_on:
-      - redis
-  
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
-    depends_on:
-      - app1
-      - app2
+The project includes a full horizontal-scaling setup. From the repo root:
+
+```bash
+docker compose up -d
 ```
+
+This starts **Redis**, **3 app instances** (app1:3001, app2:3002, app3:3003), and **nginx** on port 80 with sticky sessions and WebSocket support. Use **http://localhost** (or http://localhost:80) for API and Socket.IO; nginx load-balances across the three backends.
+
+- Config: `docker-compose.yml` (services: redis, app1, app2, app3, nginx)
+- Load balancer: `nginx.conf` (ip_hash upstream, WebSocket timeouts 7d)
+- To scale to more instances, add app4, app5, … in `docker-compose.yml` and in the `upstream` block in `nginx.conf`.
 
 ## Rate Limits
 
