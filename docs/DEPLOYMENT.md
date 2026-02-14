@@ -4,6 +4,135 @@ Steps to run this NestJS app (HTTP + WebSockets) on a Linux VPS.
 
 ---
 
+## Option 1: Docker (single domain with host Nginx)
+
+Use this when both frontend (e.g. Nuxt) and backend run in Docker, with one Nginx on the host handling HTTPS and routing.
+
+### 1.1 VPS: Docker and host Nginx
+
+- **OS:** Ubuntu 22.04 LTS (or similar).
+- Install Docker and Docker Compose, and Nginx on the host (for SSL and routing).
+
+```bash
+# Docker
+sudo apt-get update && sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture)] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Host Nginx (for HTTPS and routing to frontend + backend)
+sudo apt-get install -y nginx
+```
+
+### 1.2 Run the backend stack
+
+From the backend repo (e.g. `~/deployment/backend`):
+
+```bash
+cd ~/deployment/backend
+docker compose up -d
+```
+
+This starts Redis and 3 app instances (app1–app3). Each app is exposed on the host: **3001**, **3002**, **3003**. Host Nginx load-balances across these with sticky sessions (ip_hash).
+
+### 1.3 Host Nginx: single domain (frontend + backend)
+
+Create a site config (e.g. `/etc/nginx/sites-available/yourdomain`) so that `/` goes to the frontend and `/socket.io/` and `/mouse/` go to an upstream of the three backend ports. Use **ip_hash** so WebSocket connections stick to one backend:
+
+```nginx
+upstream backend {
+    ip_hash;
+    server 127.0.0.1:3001;
+    server 127.0.0.1:3002;
+    server 127.0.0.1:3003;
+}
+
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    # Frontend (e.g. Nuxt container mapped to 3000)
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Backend: Socket.IO
+    location /socket.io/ {
+        proxy_pass http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 7d;
+        proxy_send_timeout 7d;
+        proxy_read_timeout 7d;
+    }
+
+    # Backend: HTTP API (this app serves /mouse and /mouse/users)
+    location /mouse/ {
+        proxy_pass http://backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+- Replace `your-domain.com` with your domain.
+- Replace `127.0.0.1:3000` with the host port your **frontend** container is mapped to (e.g. Nuxt).
+- Backend traffic is load-balanced across `127.0.0.1:3001`, `3002`, `3003` via the `backend` upstream.
+
+Enable and reload:
+
+```bash
+sudo ln -sf /etc/nginx/sites-available/yourdomain /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 1.4 Frontend environment (single domain)
+
+Point the frontend at the same origin so API and Socket.IO use the same domain (no CORS needed):
+
+- `NUXT_PUBLIC_API_URL=https://your-domain.com` (or equivalent; use `''` or same origin if the app uses relative URLs).
+
+### 1.5 SSL and firewall
+
+```bash
+sudo apt-get install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com
+sudo ufw allow 22
+sudo ufw allow 80
+sudo ufw allow 443
+sudo ufw enable
+```
+
+### 1.6 Deploy updates (Option 1)
+
+```bash
+cd ~/deployment/backend
+git pull
+docker compose up -d --build
+```
+
+---
+
+## Option 2: PM2 (bare metal)
+
+The following sections describe running the backend with Node.js and PM2 on the host (no Docker for the app).
+
+---
+
 ## 1. VPS basics
 
 - **OS:** Ubuntu 22.04 LTS (or similar).

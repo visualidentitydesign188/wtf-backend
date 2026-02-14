@@ -122,11 +122,11 @@ The project includes a full horizontal-scaling setup. From the repo root:
 docker compose up -d
 ```
 
-This starts **Redis**, **3 app instances** (app1:3001, app2:3002, app3:3003), and **nginx** on port 80 with sticky sessions and WebSocket support. Use **http://localhost** (or http://localhost:80) for API and Socket.IO; nginx load-balances across the three backends.
+This starts **Redis** and **3 app instances** (app1:3001, app2:3002, app3:3003), each exposed on the host. Use **host Nginx** (on the VPS) to load-balance with sticky sessions (ip_hash) and WebSocket support; see `docs/DEPLOYMENT.md` (Option 1) for the upstream config.
 
-- Config: `docker-compose.yml` (services: redis, app1, app2, app3, nginx)
-- Load balancer: `nginx.conf` (ip_hash upstream, WebSocket timeouts 7d)
-- To scale to more instances, add app4, app5, … in `docker-compose.yml` and in the `upstream` block in `nginx.conf`.
+- Config: `docker-compose.yml` (services: redis, app1, app2, app3)
+- Load balancer: host Nginx with an `upstream` to 127.0.0.1:3001, 3002, 3003
+- To scale to more instances, add app4, app5, … in `docker-compose.yml` (with ports 3004, 3005, …) and add the same servers to the `upstream` in your host Nginx config.
 
 ## Rate Limits
 
