@@ -207,8 +207,11 @@ export class MouseGateway
       current_page: string;
     },
   ) {
+    const user = this.mouseService.getUser(client.id);
     const payload = {
       id: client.id,
+      name: user?.name,
+      color: user?.color,
       ...data,
     };
     // Broadcast to everyone except the sender (so others see this cursor)

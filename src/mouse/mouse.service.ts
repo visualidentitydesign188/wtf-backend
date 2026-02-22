@@ -47,6 +47,32 @@ export class MouseService {
   private disconnectedDrawingUsers: Map<string, { disconnectedAt: number }> =
     new Map();
 
+  private static readonly RANDOM_NAMES = [
+    'Happy Panda',
+    'Swift Fox',
+    'Calm Llama',
+    'Bold Eagle',
+    'Cheerful Otter',
+    'Clever Raven',
+    'Cozy Badger',
+    'Daring Wolf',
+    'Gentle Deer',
+    'Lucky Hare',
+    'Mighty Bear',
+    'Nimble Squirrel',
+    'Peaceful Owl',
+    'Quick Ferret',
+    'Silent Lynx',
+    'Sunny Bee',
+    'Wise Crow',
+    'Brave Hawk',
+    'Curious Cat',
+    'Jolly Penguin',
+    'Curious Cat',
+    'Jolly Penguin',
+    'Curious Cat',
+  ];
+
   private getRandomColor(): string {
     const colors = [
       '#F87171',
@@ -59,10 +85,16 @@ export class MouseService {
     return colors[Math.floor(Math.random() * colors.length)];
   }
 
+  private getRandomName(): string {
+    return MouseService.RANDOM_NAMES[
+      Math.floor(Math.random() * MouseService.RANDOM_NAMES.length)
+    ];
+  }
+
   createUser(id: string, current_page: string, roomId: string): UserPointer {
     const user: UserPointer = {
       id,
-      name: `User_${id.substring(0, 5)}`,
+      name: this.getRandomName(),
       color: this.getRandomColor(),
       current_page,
       roomId,
@@ -123,6 +155,10 @@ export class MouseService {
 
   getAllUsers(): UserPointer[] {
     return Array.from(this.users.values());
+  }
+
+  getUser(id: string): UserPointer | undefined {
+    return this.users.get(id);
   }
 
   getUsersInRoom(roomId: string): UserPointer[] {

@@ -17,11 +17,10 @@ describe('MouseService', () => {
   });
 
   describe('createUser', () => {
-    it('should create and store a user with default fields', () => {
+    it('should create and store a user with random name and default fields', () => {
       const user = service.createUser('socket-1', 'home', 'room_1');
       expect(user).toMatchObject({
         id: 'socket-1',
-        name: 'User_socke',
         current_page: 'home',
         roomId: 'room_1',
         x: 0,
@@ -31,6 +30,8 @@ describe('MouseService', () => {
         pageX: 0,
         pageY: 0,
       });
+      expect(typeof user.name).toBe('string');
+      expect(user.name.length).toBeGreaterThan(0);
       expect(user.color).toMatch(/^#[0-9A-F]{6}$/i);
       expect(service.getAllUsers()).toHaveLength(1);
     });
