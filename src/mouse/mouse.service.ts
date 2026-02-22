@@ -68,10 +68,7 @@ export class MouseService {
     'Brave Hawk',
     'Curious Cat',
     'Jolly Penguin',
-    'Curious Cat',
-    'Jolly Penguin',
-    'Curious Cat',
-  ];
+  ] as const;
 
   private getRandomColor(): string {
     const colors = [
@@ -92,10 +89,12 @@ export class MouseService {
   }
 
   createUser(id: string, current_page: string, roomId: string): UserPointer {
+    const name = this.getRandomName();
+    const color = this.getRandomColor();
     const user: UserPointer = {
       id,
-      name: this.getRandomName(),
-      color: this.getRandomColor(),
+      name: name || 'Guest',
+      color: color || '#94A3B8',
       current_page,
       roomId,
       x: 0,

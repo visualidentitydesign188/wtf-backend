@@ -88,6 +88,13 @@ export class MouseGateway
       const canvasState = this.mouseService.getCanvasState(roomId);
       client.emit('canvas_state', { operations: canvasState });
       client.emit('room_assigned', { roomId });
+      // So the connecting client gets their own profile (name, color, etc.)
+      client.emit('init', user);
+      // So the connecting client sees users already in the room
+      const usersInRoom = this.mouseService
+        .getUsersInRoom(roomId)
+        .filter((u) => u.id !== client.id);
+      client.emit('current_users', usersInRoom);
       this.server.to(roomId).emit('user_joined', user);
     } catch (error) {
       console.error('Error in handleConnection:', error);
@@ -210,8 +217,8 @@ export class MouseGateway
     const user = this.mouseService.getUser(client.id);
     const payload = {
       id: client.id,
-      name: user?.name,
-      color: user?.color,
+      name: user?.name ?? '',
+      color: user?.color ?? '#94A3B8',
       ...data,
     };
     // Broadcast to everyone except the sender (so others see this cursor)
