@@ -72,12 +72,13 @@ export class MouseService {
 
   private getRandomColor(): string {
     const colors = [
-      '#F87171',
-      '#60A5FA',
-      '#34D399',
-      '#FB923C',
-      '#A78BFA',
-      '#F472B6',
+      '#2A2A2A',
+      '#C53B3A',
+      '#0C9367',
+      '#09407E',
+      '#F1B333',
+      '#F07633',
+      '#6758A5',
     ];
     return colors[Math.floor(Math.random() * colors.length)];
   }
