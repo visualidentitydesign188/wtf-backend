@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { MouseController } from './mouse.controller';
 import { MouseService } from './mouse.service';
+import { RedisService } from '../redis/redis.service';
 
 describe('MouseController', () => {
   let controller: MouseController;
@@ -8,7 +9,16 @@ describe('MouseController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [MouseController],
-      providers: [MouseService],
+      providers: [
+        MouseService,
+        {
+          provide: RedisService,
+          useValue: {
+            getPubClient: jest.fn(() => ({ get: jest.fn(), set: jest.fn(), del: jest.fn() })),
+            getSubClient: jest.fn(),
+          },
+        },
+      ],
     }).compile();
 
     controller = module.get<MouseController>(MouseController);

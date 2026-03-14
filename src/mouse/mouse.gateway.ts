@@ -16,15 +16,20 @@ import { RoomService } from './room.service';
 import { RedisService } from '../redis/redis.service';
 import { RateLimitService } from './rate-limit.service';
 import { MessageThrottleService } from './message-throttle.service';
+import {
+  validateDrawOp,
+  validateMovePointer,
+  validateResetOps,
+  sanitizePointerData,
+} from './validation';
 
 @WebSocketGateway({
   cors: { origin: '*' },
-  maxHttpBufferSize: 1e6, // Reduced to 1MB - use compression for large payloads
-  pingTimeout: 60000, // 60 seconds
-  pingInterval: 25000, // 25 seconds
-  transports: ['websocket', 'polling'], // Allow fallback
-  allowEIO3: true, // Backward compatibility
-  // Connection limits
+  maxHttpBufferSize: 1e6,
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ['websocket', 'polling'],
+  allowEIO3: true,
   perMessageDeflate: {
     zlibDeflateOptions: {
       chunkSize: 1024,
@@ -34,7 +39,7 @@ import { MessageThrottleService } from './message-throttle.service';
     zlibInflateOptions: {
       chunkSize: 10 * 1024,
     },
-    threshold: 1024, // Only compress if payload > 1KB
+    threshold: 1024,
   },
 })
 export class MouseGateway
@@ -47,6 +52,9 @@ export class MouseGateway
   @WebSocketServer()
   server: Server;
 
+  private static readonly TTL_REFRESH_INTERVAL_MS = 10 * 60 * 1000; // 10 min
+  private lastTTLRefresh = new Map<string, number>();
+
   constructor(
     private readonly mouseService: MouseService,
     private readonly roomService: RoomService,
@@ -55,9 +63,7 @@ export class MouseGateway
     private readonly messageThrottleService: MessageThrottleService,
   ) {}
 
-  afterInit(_server: Server) {
-    // Adapter is set in onApplicationBootstrap so Redis is ready (after all onModuleInit).
-  }
+  afterInit(_server: Server) {}
 
   onApplicationBootstrap() {
     const pubClient = this.redisService.getPubClient();
@@ -72,6 +78,72 @@ export class MouseGateway
     console.log('Socket.IO Redis adapter initialized for horizontal scaling');
   }
 
+  /**
+   * Re-assign a connected client to a new room after their previous room
+   * expired in Redis. Leaves stale Socket.IO rooms, creates a fresh room,
+   * and sends the full init sequence so the frontend updates seamlessly.
+   */
+  private async reassignToRoom(client: Socket): Promise<string> {
+    for (const room of client.rooms) {
+      if (room !== client.id) client.leave(room);
+    }
+
+    const currentPage =
+      (client.handshake.query.current_page as string) || 'home';
+    const roomId = await this.roomService.getOrCreateRoomForUser(client.id);
+    client.join(roomId);
+
+    const user = await this.mouseService.createUser(
+      client.id,
+      currentPage,
+      roomId,
+    );
+
+    this.lastTTLRefresh.set(roomId, Date.now());
+    await this.mouseService.refreshRoomTTLs(roomId);
+
+    const canvasState = await this.mouseService.getCanvasState(roomId);
+    client.emit('canvas_state', { operations: canvasState });
+    client.emit('room_assigned', { roomId });
+    client.emit('init', user);
+
+    const usersInRoom = (
+      await this.mouseService.getUsersInRoom(roomId)
+    ).filter((u) => u.id !== client.id);
+    client.emit('current_users', usersInRoom);
+    this.server.to(roomId).emit('user_joined', user);
+
+    console.log(
+      `User ${client.id} reassigned to room ${roomId} after expiration`,
+    );
+    return roomId;
+  }
+
+  /**
+   * Refresh TTLs for a room at most once per TTL_REFRESH_INTERVAL_MS.
+   * Called on every user activity so long-running sessions never expire.
+   */
+  private async maybeRefreshTTLs(roomId: string): Promise<void> {
+    const now = Date.now();
+    const last = this.lastTTLRefresh.get(roomId) ?? 0;
+    if (now - last < MouseGateway.TTL_REFRESH_INTERVAL_MS) return;
+    this.lastTTLRefresh.set(roomId, now);
+    await this.mouseService.refreshRoomTTLs(roomId);
+  }
+
+  /**
+   * Get the user's current room, or reassign them if their room expired.
+   * Also triggers a throttled TTL refresh to keep the room alive.
+   */
+  private async getOrReassignRoom(client: Socket): Promise<string> {
+    const roomId = await this.roomService.getRoomIdForUser(client.id);
+    if (roomId) {
+      await this.maybeRefreshTTLs(roomId);
+      return roomId;
+    }
+    return this.reassignToRoom(client);
+  }
+
   async handleConnection(client: Socket) {
     try {
       const currentPage =
@@ -79,21 +151,27 @@ export class MouseGateway
       const roomId = await this.roomService.getOrCreateRoomForUser(client.id);
       client.join(roomId);
 
-      const user = this.mouseService.createUser(client.id, currentPage, roomId);
+      const user = await this.mouseService.createUser(
+        client.id,
+        currentPage,
+        roomId,
+      );
       const roomSize = await this.roomService.getRoomSize(roomId);
       console.log(
         `User connected: ${client.id} on page ${currentPage}, room ${roomId} (${roomSize}/5)`,
       );
 
-      const canvasState = this.mouseService.getCanvasState(roomId);
+      this.lastTTLRefresh.set(roomId, Date.now());
+      await this.mouseService.refreshRoomTTLs(roomId);
+
+      const canvasState = await this.mouseService.getCanvasState(roomId);
       client.emit('canvas_state', { operations: canvasState });
       client.emit('room_assigned', { roomId });
-      // So the connecting client gets their own profile (name, color, etc.)
       client.emit('init', user);
-      // So the connecting client sees users already in the room
-      const usersInRoom = this.mouseService
-        .getUsersInRoom(roomId)
-        .filter((u) => u.id !== client.id);
+
+      const usersInRoom = (
+        await this.mouseService.getUsersInRoom(roomId)
+      ).filter((u) => u.id !== client.id);
       client.emit('current_users', usersInRoom);
       this.server.to(roomId).emit('user_joined', user);
     } catch (error) {
@@ -104,14 +182,15 @@ export class MouseGateway
 
   async handleDisconnect(client: Socket) {
     try {
-      this.mouseService.markUserDisconnected(client.id);
       const roomId = await this.roomService.removeUserFromRoom(client.id);
       await this.rateLimitService.resetSocketLimits(client.id);
       this.messageThrottleService.flush(roomId || undefined);
-      this.mouseService.removeUser(client.id);
+      await this.mouseService.removeUser(client.id);
       console.log(`User disconnected: ${client.id}`);
       if (roomId) {
         this.server.to(roomId).emit('user_left', { id: client.id });
+        const remaining = await this.roomService.getRoomSize(roomId);
+        if (remaining === 0) this.lastTTLRefresh.delete(roomId);
       }
     } catch (error) {
       console.error('Error in handleDisconnect:', error);
@@ -124,12 +203,15 @@ export class MouseGateway
     @MessageBody() op: Operation,
   ) {
     try {
-      if (!op?.id || !op?.playerId || !op?.type) {
-        console.warn('Invalid operation received:', op);
+      const validation = validateDrawOp(op, client.id);
+      if (!validation.valid) {
+        client.emit('error', { message: validation.reason });
         return;
       }
 
-      // Rate limiting check
+      // Enforce server-authoritative playerId
+      op.playerId = client.id;
+
       const rateLimit = await this.rateLimitService.checkDrawOpLimit(client.id);
       if (!rateLimit.allowed) {
         client.emit('rate_limit_exceeded', {
@@ -139,13 +221,8 @@ export class MouseGateway
         return;
       }
 
-      const roomId = await this.roomService.getRoomIdForUser(client.id);
-      if (!roomId) {
-        client.emit('error', { message: 'Not assigned to a room' });
-        return;
-      }
+      const roomId = await this.getOrReassignRoom(client);
 
-      // Check room message limit
       const roomLimitOk =
         await this.rateLimitService.checkRoomMessageLimit(roomId);
       if (!roomLimitOk) {
@@ -157,15 +234,10 @@ export class MouseGateway
         op.timestamp = Date.now();
       }
 
-      // Throttle/batch operations to reduce message volume
       const batchedOps = await this.messageThrottleService.throttle(roomId, op);
 
-      // Add all operations in batch
-      for (const batchedOp of batchedOps) {
-        this.mouseService.addOperation(roomId, batchedOp);
-      }
+      await this.mouseService.addOperations(roomId, batchedOps);
 
-      // Emit batch if multiple, single if just one
       if (batchedOps.length > 1) {
         this.server
           .to(roomId)
@@ -185,13 +257,15 @@ export class MouseGateway
     @MessageBody() data: { userId?: string },
   ) {
     try {
-      const roomId = await this.roomService.getRoomIdForUser(client.id);
-      if (!roomId) {
-        client.emit('error', { message: 'Not assigned to a room' });
+      const validation = validateResetOps(data);
+      if (!validation.valid) {
+        client.emit('error', { message: validation.reason });
         return;
       }
+
+      const roomId = await this.getOrReassignRoom(client);
       const userId = data?.userId || client.id;
-      const canvasState = this.mouseService.removeUserOperations(userId);
+      const canvasState = await this.mouseService.removeUserOperations(userId);
       this.server
         .to(roomId)
         .emit('user_ops_removed', { userId, canvas_state: canvasState });
@@ -200,8 +274,9 @@ export class MouseGateway
       client.emit('error', { message: 'Failed to reset operations' });
     }
   }
+
   @SubscribeMessage('move_pointer')
-  handleMovePointer(
+  async handleMovePointer(
     @ConnectedSocket() client: Socket,
     @MessageBody()
     data: {
@@ -214,14 +289,17 @@ export class MouseGateway
       current_page: string;
     },
   ) {
+    const validation = validateMovePointer(data);
+    if (!validation.valid) return;
+
     const user = this.mouseService.getUser(client.id);
+    const roomId = await this.getOrReassignRoom(client);
     const payload = {
       id: client.id,
       name: user?.name ?? '',
       color: user?.color ?? '#94A3B8',
-      ...data,
+      ...sanitizePointerData(data as Record<string, unknown>),
     };
-    // Broadcast to everyone except the sender (so others see this cursor)
-    client.broadcast.emit('pointer_moved', payload);
+    client.to(roomId).emit('pointer_moved', payload);
   }
 }

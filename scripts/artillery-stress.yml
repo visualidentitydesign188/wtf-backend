@@ -1,0 +1,66 @@
+# Artillery stress test: rooms, user assignment, and target load (e.g. 5000 users)
+#
+# Run:
+#   npm run stress-test                    # uses "local" (localhost:3001)
+#   npm run stress-test -- -e deployed    # uses "deployed" URL below
+#
+# With HTML report:
+#   npm run stress-test:report -- -e deployed
+#
+# What this tests:
+# - Rooms are created: each VU connects with current_page; server creates/assigns room (room_assigned).
+# - Users are assigned: if assignment failed, draw_op would get "Not assigned to a room" and the scenario would fail.
+# - Server handles load: connection count, emit rate, latency, and errors are reported.
+
+config:
+  target: 'http://localhost:3001'
+  # Set WS_URL for each environment; run with: artillery run ... -e <name>
+  environments:
+    local:
+      target: 'http://localhost:3001'
+    deployed:
+      # Use the site origin only (no path). Socket.IO uses path /socket.io by default.
+      # If you use a path here (e.g. /api/), the client treats it as a namespace and the server returns "Invalid namespace".
+      target: 'https://allthingswtf.com'
+  socketio:
+    query:
+      current_page: 'load-test'
+    transports: ['websocket', 'polling']
+  # Target ~5000 concurrent users: each scenario runs ~65s; arrivalRate 80 over 60s = 4800 VUs
+  # Edit arrivalRate (e.g. 40) for lighter load.
+  phases:
+    - duration: 60
+      arrivalRate: 80
+      name: 'Ramp up to target load'
+    - duration: 120
+      arrivalRate: 80
+      name: 'Sustained load'
+  engines:
+    socketio-v3: {}
+
+scenarios:
+  - name: 'Connect, get room assignment, send draw ops'
+    engine: socketio-v3
+    flow:
+      # Allow server to send canvas_state, room_assigned, init, current_users
+      - think: 2
+      # Send draw ops (validates user is in a room; else server would emit error)
+      - loop:
+          - emit:
+              channel: 'draw_op'
+              data:
+                id: 'op-{{ $randomString() }}-{{ $timestamp }}'
+                playerId: '{{ $socketId }}'
+                type: 'pencil'
+                timestamp: '{{ $timestamp }}'
+                data:
+                  path:
+                    - x: '{{ $randomInt(0, 800) }}'
+                      y: '{{ $randomInt(0, 600) }}'
+                    - x: '{{ $randomInt(0, 800) }}'
+                      y: '{{ $randomInt(0, 600) }}'
+                  color: '#000000'
+                  size: 2
+          - think: 1
+        count: 30
+      - think: 1

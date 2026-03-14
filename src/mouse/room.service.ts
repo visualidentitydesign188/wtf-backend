@@ -12,40 +12,53 @@ export class RoomService {
   private readonly ROOM_PREFIX = 'room:';
   private readonly SOCKET_PREFIX = 'socket:';
   private readonly ROOM_COUNTER_KEY = 'room:counter';
+  private static readonly ROOM_TTL = 3600;
+  private static readonly SCAN_BATCH = 100;
 
   constructor(private readonly redisService: RedisService) {}
 
   /**
    * Assigns a socket to a room: either the first room with space (< MAX_ROOM_SIZE)
-   * or a newly created room. Returns the room ID and joins the socket to it.
-   * Uses Redis for distributed room management.
+   * or a newly created room. Uses SCAN (non-blocking) instead of KEYS, and
+   * pipelines SCARD calls to check room sizes in a single round-trip.
    */
   async getOrCreateRoomForUser(socketId: string): Promise<string> {
     const redis = this.redisService.getPubClient();
 
-    // Find first room with space
-    const roomKeys = await redis.keys(`${this.ROOM_PREFIX}*`);
-    for (const roomKey of roomKeys) {
-      if (roomKey === this.ROOM_COUNTER_KEY) continue;
+    let cursor = '0';
+    do {
+      const [nextCursor, keys] = await redis.scan(
+        cursor,
+        'MATCH',
+        `${this.ROOM_PREFIX}*`,
+        'COUNT',
+        RoomService.SCAN_BATCH,
+      );
+      cursor = nextCursor;
 
-      const size = await redis.scard(roomKey);
-      if (size < MAX_ROOM_SIZE) {
+      const roomKeys = keys.filter((k) => k !== this.ROOM_COUNTER_KEY);
+      if (roomKeys.length === 0) continue;
+
+      const sizePipeline = redis.pipeline();
+      for (const key of roomKeys) {
+        sizePipeline.scard(key);
+      }
+      const sizeResults = await sizePipeline.exec();
+
+      for (let i = 0; i < roomKeys.length; i++) {
+        const [err, size] = sizeResults![i];
+        if (err || (size as number) >= MAX_ROOM_SIZE) continue;
+
+        const roomKey = roomKeys[i];
         const roomId = roomKey.replace(this.ROOM_PREFIX, '');
-        await redis.sadd(roomKey, socketId);
-        await redis.set(`${this.SOCKET_PREFIX}${socketId}`, roomId);
-        await redis.expire(`${this.SOCKET_PREFIX}${socketId}`, 3600); // 1 hour TTL
+        await this.joinRoom(redis, roomKey, roomId, socketId);
         return roomId;
       }
-    }
+    } while (cursor !== '0');
 
-    // All rooms full — create new room
     const roomId = await this.generateRoomId();
     const roomKey = `${this.ROOM_PREFIX}${roomId}`;
-    await redis.sadd(roomKey, socketId);
-    await redis.set(`${this.SOCKET_PREFIX}${socketId}`, roomId);
-    await redis.expire(`${this.SOCKET_PREFIX}${socketId}`, 3600);
-    await redis.expire(roomKey, 3600); // Auto-cleanup empty rooms
-
+    await this.joinRoom(redis, roomKey, roomId, socketId);
     return roomId;
   }
 
@@ -55,20 +68,21 @@ export class RoomService {
   }
 
   /**
-   * Removes user from their room. Returns the roomId they were in (for broadcasting).
-   * Removes the room entry if it becomes empty.
+   * Removes user from their room. Returns the roomId they were in.
+   * Deletes the room key if it becomes empty.
    */
   async removeUserFromRoom(socketId: string): Promise<string | null> {
     const redis = this.redisService.getPubClient();
     const roomId = await redis.get(`${this.SOCKET_PREFIX}${socketId}`);
-
     if (!roomId) return null;
 
     const roomKey = `${this.ROOM_PREFIX}${roomId}`;
-    await redis.srem(roomKey, socketId);
-    await redis.del(`${this.SOCKET_PREFIX}${socketId}`);
 
-    // Check if room is empty and delete it
+    const removePipeline = redis.pipeline();
+    removePipeline.srem(roomKey, socketId);
+    removePipeline.del(`${this.SOCKET_PREFIX}${socketId}`);
+    await removePipeline.exec();
+
     const size = await redis.scard(roomKey);
     if (size === 0) {
       await redis.del(roomKey);
@@ -79,19 +93,35 @@ export class RoomService {
 
   async getRoomUserIds(roomId: string): Promise<string[]> {
     const redis = this.redisService.getPubClient();
-    const roomKey = `${this.ROOM_PREFIX}${roomId}`;
-    return redis.smembers(roomKey);
+    return redis.smembers(`${this.ROOM_PREFIX}${roomId}`);
   }
 
   async getRoomSize(roomId: string): Promise<number> {
     const redis = this.redisService.getPubClient();
-    const roomKey = `${this.ROOM_PREFIX}${roomId}`;
-    return redis.scard(roomKey);
+    return redis.scard(`${this.ROOM_PREFIX}${roomId}`);
   }
 
   private async generateRoomId(): Promise<string> {
     const redis = this.redisService.getPubClient();
     const counter = await redis.incr(this.ROOM_COUNTER_KEY);
     return `room_${counter}`;
+  }
+
+  private async joinRoom(
+    redis: ReturnType<RedisService['getPubClient']>,
+    roomKey: string,
+    roomId: string,
+    socketId: string,
+  ): Promise<void> {
+    const pipeline = redis.pipeline();
+    pipeline.sadd(roomKey, socketId);
+    pipeline.set(
+      `${this.SOCKET_PREFIX}${socketId}`,
+      roomId,
+      'EX',
+      RoomService.ROOM_TTL,
+    );
+    pipeline.expire(roomKey, RoomService.ROOM_TTL);
+    await pipeline.exec();
   }
 }

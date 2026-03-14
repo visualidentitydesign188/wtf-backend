@@ -7,6 +7,8 @@
   "license": "UNLICENSED",
   "scripts": {
     "load-test": "node scripts/load-test.js",
+    "stress-test": "artillery run scripts/artillery-stress.yml",
+    "stress-test:report": "sh scripts/stress-report.sh",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
@@ -37,6 +39,8 @@
     "ioredis": "^5.4.1"
   },
   "devDependencies": {
+    "artillery": "^2.0.0",
+    "artillery-engine-socketio-v3": "^1.2.0",
     "socket.io-client": "^4.8.3",
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",

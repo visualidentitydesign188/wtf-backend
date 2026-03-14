@@ -69,29 +69,73 @@ Use the **rate limited** and **errors** counts to see how your server behaves un
 
 ---
 
-## 2. Artillery (optional)
+## 2. Artillery stress test (recommended for capacity)
 
-[Artillery](https://www.artillery.io/) can run WebSocket scenarios. You need the Socket.IO engine.
+[Artillery](https://www.artillery.io/) is set up with the Socket.IO v3/v4 engine to validate **room creation**, **user assignment**, and **target load** (e.g. 5000 concurrent users).
 
-### Install
+### Install (included in devDependencies)
 
 ```bash
-npm install -g artillery
-npm install -g artillery-engine-socketio
+pnpm install
+# artillery + artillery-engine-socketio-v3 are already in package.json
 ```
+
+### What the stress test checks
+
+- **Rooms created:** Each virtual user connects with `current_page: load-test`; the server creates or reuses rooms and emits `room_assigned`.
+- **Users assigned:** If assignment failed, a later `draw_op` would trigger the server to emit `error` (“Not assigned to a room”) and the scenario would fail. Successful completion implies assignment worked.
+- **Load:** Artillery reports connection count, emit rate, latency (p50/p95/p99), and errors so you can see if the server handles the target number of users.
 
 ### Run
 
 ```bash
-# Basic run (edit script to match your server URL if needed)
-artillery run scripts/artillery-websocket.yml
+# Start backend (and Redis) first, then:
+npm run stress-test
 ```
 
-Artillery’s Socket.IO support and YAML format may differ; use the Node script above for a reliable, project-specific load test.
+- **Local:** default target is `http://localhost:3001` (no flag needed).
+- **Deployed server:** run with the `deployed` environment:
+  ```bash
+  npm run stress-test -- -e deployed
+  npm run stress-test:report -- -e deployed
+  ```
+
+**Where to set the deployed URL:** In `scripts/artillery-stress.yml`, under `config.environments.deployed.target`. Change `https://allthingswtf.com` to your real domain. You can add more environments (e.g. `staging`) the same way.
+
+To tune load, edit `scripts/artillery-stress.yml` and change the `arrivalRate` in the `phases` (default 80), or override via Artillery:
+
+```bash
+npx artillery run scripts/artillery-stress.yml --overrides '{"config":{"phases":[{"duration":60,"arrivalRate":40,"name":"Ramp up"},{"duration":120,"arrivalRate":40,"name":"Sustained"}]}}'
+```
+
+### HTML report
+
+```bash
+npm run stress-test:report              # test local, then generate report
+npm run stress-test:report -- -e deployed   # test deployed server, then generate report
+```
+
+Writes `reports/stress-report.json` and `reports/stress-report.html`. Open the HTML file in a browser for charts and metrics. The same `-e` flag is passed to the test run, so use `-e deployed` when testing the deployed server.
+
+### Scenario file
+
+- **`scripts/artillery-stress.yml`** – Phases: 60s ramp, 120s sustain. Each virtual user: connect → wait 2s (for `room_assigned`, etc.) → send 30 `draw_op` messages with 1s think between each.
 
 ---
 
-## 3. Manual testing with multiple browser tabs
+## 3. Artillery quick run (legacy scenario)
+
+For a short run with the older scenario file:
+
+```bash
+artillery run scripts/artillery-websocket.yml
+```
+
+Override URL: `WS_URL=http://localhost:3001 artillery run scripts/artillery-websocket.yml`. Prefer `npm run stress-test` and `scripts/artillery-stress.yml` for room/assignment and target-load testing.
+
+---
+
+## 4. Manual testing with multiple browser tabs
 
 1. Open your frontend in several tabs (e.g. 10–20).
 2. Draw in each tab.
@@ -99,7 +143,7 @@ Artillery’s Socket.IO support and YAML format may differ; use the Node script 
 
 ---
 
-## 4. k6 (optional)
+## 5. k6 (optional)
 
 [k6](https://k6.io/) supports WebSockets and can run from a script.
 
@@ -140,9 +184,9 @@ k6’s WebSocket API is generic; Socket.IO’s handshake and protocol are differ
 
 ## Quick checklist
 
-1. Install: `npm install --save-dev socket.io-client`
-2. Start server: `npm run dev` (or prod)
-3. Run: `npm run load-test`
-4. Try: `CLIENTS=100 OPS_PER_SEC=10 npm run load-test` and watch rate limits and errors
+1. Install: `pnpm install` (includes socket.io-client and Artillery + socketio-v3 engine)
+2. Start server: `npm run dev` (or prod) and ensure Redis is running
+3. **Load test (Node):** `npm run load-test` — try `CLIENTS=100 OPS_PER_SEC=10 npm run load-test`
+4. **Stress test (Artillery):** `npm run stress-test` — validates rooms, assignment, and load; use `npm run stress-test:report` for an HTML report
 
 For more on scaling and production, see [SCALING_GUIDE.md](./SCALING_GUIDE.md).
