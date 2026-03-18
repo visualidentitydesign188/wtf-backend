@@ -23,8 +23,25 @@ import {
   sanitizePointerData,
 } from './validation';
 
+const SOCKETIO_ALLOWED_ORIGINS = (
+  process.env.WTF_SOCKETIO_CORS_ORIGINS ??
+  'https://allthingswtf.com'
+)
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 @WebSocketGateway({
-  cors: { origin: '*' },
+  // Security: only allow Socket.IO connections from specific origins.
+  // Configure with `WTF_SOCKETIO_CORS_ORIGINS="https://allthingswtf.com,https://staging.example.com"`.
+  cors: {
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      // If `origin` is missing (non-browser clients), allow by default.
+      if (!origin) return callback(null, true);
+      if (SOCKETIO_ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      return callback(new Error(`Origin not allowed: ${origin}`));
+    },
+  },
   maxHttpBufferSize: 1e6,
   pingTimeout: 60000,
   pingInterval: 25000,
