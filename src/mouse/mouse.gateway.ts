@@ -22,8 +22,12 @@ import {
   validateResetOps,
   sanitizePointerData,
 } from './validation';
+import {
+  expandAllowedSocketOrigins,
+  normalizeSocketOrigin,
+} from './socketio-cors.util';
 
-const SOCKETIO_ALLOWED_ORIGINS = (
+const SOCKETIO_ALLOWED_ORIGINS_RAW = (
   process.env.WTF_SOCKETIO_CORS_ORIGINS ??
   'https://allthingswtf.com'
 )
@@ -31,14 +35,27 @@ const SOCKETIO_ALLOWED_ORIGINS = (
   .map((o) => o.trim())
   .filter(Boolean);
 
+/** Apex + www variants so users on www vs non-www both work */
+const SOCKETIO_ALLOWED_ORIGINS = expandAllowedSocketOrigins(
+  SOCKETIO_ALLOWED_ORIGINS_RAW,
+);
+
 @WebSocketGateway({
   // Security: only allow Socket.IO connections from specific origins.
   // Configure with `WTF_SOCKETIO_CORS_ORIGINS="https://allthingswtf.com,https://staging.example.com"`.
+  // www and apex are both accepted when either is listed (see socketio-cors.util.ts).
   cors: {
-    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    origin: (
+      origin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
       // If `origin` is missing (non-browser clients), allow by default.
       if (!origin) return callback(null, true);
-      if (SOCKETIO_ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      const normalized = normalizeSocketOrigin(origin);
+      if (SOCKETIO_ALLOWED_ORIGINS.has(normalized)) return callback(null, true);
+      console.warn(
+        `[Socket.IO CORS] Rejected origin: ${origin} (allowed: ${[...SOCKETIO_ALLOWED_ORIGINS].join(', ')})`,
+      );
       return callback(new Error(`Origin not allowed: ${origin}`));
     },
   },
